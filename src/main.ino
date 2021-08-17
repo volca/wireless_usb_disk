@@ -2,6 +2,10 @@
  * Simple MSC device with SD card
  * author: chegewara
  */
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiAP.h>
+#include <WebServer.h>
 #include "sdusb.h"
 
 #define SD_MISO  37
@@ -9,37 +13,21 @@
 #define SD_SCK   36
 #define SD_CS    34
 
+// Config SSID and password
+const char* SSID        = "Wireless USB Disk";  // Enter your SSID here
+const char* PASSWORD    = "12345678";           // Enter your Password here
+
 SDCard2USB dev;
 
-void listDir(fs::FS &fs, const char * dirname, uint8_t levels){
-    Serial.printf("Listing directory: %s\n", dirname);
+// web server
+WebServer server(80);
 
-    File root = fs.open(dirname);
-    if(!root){
-        Serial.println("Failed to open directory");
-        return;
-    }
-    if(!root.isDirectory()){
-        Serial.println("Not a directory");
-        return;
-    }
-
-    File file = root.openNextFile();
-    while(file){
-        if(file.isDirectory()){
-            Serial.print("  DIR : ");
-            Serial.println(file.name());
-            if(levels){
-                listDir(fs, file.name(), levels -1);
-            }
-        } else {
-            Serial.print("  FILE: ");
-            Serial.print(file.name());
-            Serial.print("  SIZE: ");
-            Serial.println(file.size());
-        }
-        file = root.openNextFile();
-    }
+void handleRoot() {
+    String output = "<table class=\"fixed\" border=\"1\">"
+        "<col width=\"800px\" /><col width=\"300px\" /><col width=\"300px\" /><col width=\"100px\" />"
+        "<thead><tr><th>Name</th><th>Type</th><th>Size (Bytes)</th><th>Delete</th></tr></thead>"
+        "<tbody>";
+    server.send(200, "text/html", output);
 }
 
 void createDir(fs::FS &fs, const char * path){
@@ -168,7 +156,7 @@ void testFileIO(fs::FS &fs, const char * path){
     file.close();
 }
 
-void test()
+void testSD()
 {
 
     uint8_t cardType = SD.cardType();
@@ -185,21 +173,14 @@ void test()
 
     uint64_t cardSize = SD.cardSize() / (1024 * 1024);
     Serial.printf("SD Card Size: %lluMB\n", cardSize);
-
-    listDir(SD, "/", 0);
-    createDir(SD, "/mydir");
-    listDir(SD, "/", 0);
-    removeDir(SD, "/mydir");
-    listDir(SD, "/", 2);
-    writeFile(SD, "/hello.txt", "Hello ");
-    appendFile(SD, "/hello.txt", "World!\n");
-    readFile(SD, "/hello.txt");
-    deleteFile(SD, "/foo.txt");
-    renameFile(SD, "/hello.txt", "/foo.txt");
-    readFile(SD, "/foo.txt");
-    testFileIO(SD, "/test.txt");
     Serial.printf("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
     Serial.printf("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
+}
+
+void startFileServer() {
+    server.on("/", HTTP_GET, handleRoot);
+    server.begin();
+
 }
 
 void setup()
@@ -213,11 +194,18 @@ void setup()
     } else log_e("LUN 1 failed");
   } else Serial.println("Failed to init SD");
 
-  test();
+  testSD();
+
+  delay(1000);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(SSID, PASSWORD);
+
+  delay(1000);
+  startFileServer();
 }
 
-void loop()
-{
-  delay(1000);
+void loop() {
+  server.handleClient();
+  delay(2);
 }
 

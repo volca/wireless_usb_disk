@@ -23,10 +23,38 @@ SDCard2USB dev;
 WebServer server(80);
 
 void handleRoot() {
+    if (!server.hasArg("dir")) {
+        server.send(500, "text/plain", "BAD ARGS");
+        return;
+    }
+
+    String path = server.arg("dir");
+    Serial.println("handleFileList: " + path);
+
+    File root = SD.open(path);
     String output = "<table class=\"fixed\" border=\"1\">"
         "<col width=\"800px\" /><col width=\"300px\" /><col width=\"300px\" /><col width=\"100px\" />"
         "<thead><tr><th>Name</th><th>Type</th><th>Size (Bytes)</th><th>Delete</th></tr></thead>"
         "<tbody>";
+
+    if (root && root.isDirectory()) {
+        File file = root.openNextFile();
+        while (file) {
+            output += "<tr><td><a href=\"/" + String(file.name()) + ">" + String(file.name()) + "</a></td><td>";
+            if(file.isDirectory()){
+                Serial.print("  DIR : ");
+                Serial.println(file.name());
+                output += "dir";
+            } else {
+                Serial.print("  FILE: ");
+                Serial.print(file.name());
+                output += "file";
+            }
+
+            output += "</td><td>" + String(file.size()) + "</td><td>Delete</td></tr>";
+            file = root.openNextFile();
+        }
+    }
     server.send(200, "text/html", output);
 }
 
@@ -180,7 +208,6 @@ void testSD()
 void startFileServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.begin();
-
 }
 
 void setup()

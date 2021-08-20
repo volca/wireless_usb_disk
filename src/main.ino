@@ -23,20 +23,83 @@ SDCard2USB dev;
 // web server
 WebServer server(80);
 
-void handleRoot() {
-    String path = "/index.htm";
-    String dataType = "text/html";
-
-    File dataFile = SPIFFS.open(path.c_str());
-    if (!dataFile) {
-        return;
+String getContentType(String filename) {
+    if (server.hasArg("download")) {
+        return "application/octet-stream";
+    } else if (filename.endsWith(".htm")) {
+        return "text/html";
+    } else if (filename.endsWith(".html")) {
+        return "text/html";
+    } else if (filename.endsWith(".css")) {
+        return "text/css";
+    } else if (filename.endsWith(".js")) {
+        return "application/javascript";
+    } else if (filename.endsWith(".png")) {
+        return "image/png";
+    } else if (filename.endsWith(".gif")) {
+        return "image/gif";
+    } else if (filename.endsWith(".jpg")) {
+        return "image/jpeg";
+    } else if (filename.endsWith(".ico")) {
+        return "image/x-icon";
+    } else if (filename.endsWith(".xml")) {
+        return "text/xml";
+    } else if (filename.endsWith(".pdf")) {
+        return "application/x-pdf";
+    } else if (filename.endsWith(".zip")) {
+        return "application/x-zip";
+    } else if (filename.endsWith(".gz")) {
+        return "application/x-gzip";
     }
+    return "text/plain";
+}
 
-    if (server.streamFile(dataFile, dataType) != dataFile.size()) {
-        Serial.println("Sent less data than expected!");
+bool handleFileRead(String path) {
+    Serial.println("handleFileRead: " + path);
+    if (path.endsWith("/")) {
+        path += "index.htm";
+        String contentType = "text/html";
+        File file = SPIFFS.open(path.c_str());
+        server.streamFile(file, contentType);
+        file.close();
+        return true;
+    } else if (path.endsWith("/favicon.ico")) {
+        String contentType = "text/x-icon";
+        File file = SPIFFS.open(path.c_str());
+        server.streamFile(file, contentType);
+        file.close();
+        return true;
+    } else {
+        String contentType = getContentType(path);
+        String pathWithGz = path + ".gz";
+        if (SD.exists(pathWithGz) || SD.exists(path)) {
+            if (SD.exists(pathWithGz)) {
+                path += ".gz";
+            }
+            File file = SD.open(path, "r");
+            server.streamFile(file, contentType);
+            file.close();
+            return true;
+        }
     }
+    return false;
+}
 
-    dataFile.close();
+void handleFileDelete() {
+    if (server.args() == 0) {
+        return server.send(500, "text/plain", "BAD ARGS");
+    }
+    String path = server.arg(0);
+    Serial.println("handleFileDelete: " + path);
+    if (path == "/") {
+        return server.send(500, "text/plain", "BAD PATH");
+    }
+    if (!SD.exists(path)) {
+        return server.send(404, "text/plain", "FileNotFound");
+    }
+    SD.remove(path);
+    server.send(200, "text/plain", "");
+    path = String();
 }
 
 void handleFileList() {
@@ -221,8 +284,13 @@ void testSD()
 }
 
 void startFileServer() {
-    server.on("/", HTTP_GET, handleRoot);
     server.on("/list", HTTP_GET, handleFileList);
+    server.on("/delete", HTTP_POST, handleFileDelete);
+    server.onNotFound([]() {
+        if (!handleFileRead(server.uri())) {
+            server.send(404, "text/plain", "FileNotFound");
+        }
+    });
     server.begin();
 }
 

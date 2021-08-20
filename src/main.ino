@@ -54,14 +54,18 @@ String getContentType(String filename) {
     return "text/plain";
 }
 
+void handleIndex() {
+    String path = "/index.htm";
+    String contentType = "text/html";
+    File file = SPIFFS.open(path.c_str());
+    server.streamFile(file, contentType);
+    file.close();
+}
+
 bool handleFileRead(String path) {
     Serial.println("handleFileRead: " + path);
     if (path.endsWith("/")) {
-        path += "index.htm";
-        String contentType = "text/html";
-        File file = SPIFFS.open(path.c_str());
-        server.streamFile(file, contentType);
-        file.close();
+        handleIndex();
         return true;
     } else if (path.endsWith("/favicon.ico")) {
         String contentType = "text/x-icon";
@@ -77,8 +81,13 @@ bool handleFileRead(String path) {
                 path += ".gz";
             }
             File file = SD.open(path, "r");
-            server.streamFile(file, contentType);
-            file.close();
+            if (file.isDirectory()) {
+                handleIndex();
+                file.close();
+            } else {
+                server.streamFile(file, contentType);
+                file.close();
+            }
             return true;
         }
     }
@@ -98,7 +107,8 @@ void handleFileDelete() {
         return server.send(404, "text/plain", "FileNotFound");
     }
     SD.remove(path);
-    server.send(200, "text/plain", "");
+    server.sendHeader("Location", String("/"), true);
+    server.send(302, "text/plain", "");
     path = String();
 }
 

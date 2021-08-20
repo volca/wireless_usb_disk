@@ -30,7 +30,8 @@
                          <td>${i.size}</td>
                          <td>
                              <form method="post" action="/delete">
-                             <button type="submit" value="$(i.name}">Delete</button>
+                             <input type="hidden" name="dir" value="${i.name}">
+                             <button type="submit">Delete</button>
                              </form>
                          </td>
                          </tr>`;
@@ -41,7 +42,7 @@
         xh.send(null);
     };
 
-    loadFiles('/');
+    loadFiles(window.location.pathname);
 })();
 
 </script>

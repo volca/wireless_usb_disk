@@ -6,6 +6,7 @@
 #include <WiFiClient.h>
 #include <WiFiAP.h>
 #include <WebServer.h>
+#include <SPIFFS.h>
 #include "sdusb.h"
 
 #define SD_MISO  37
@@ -14,7 +15,7 @@
 #define SD_CS    34
 
 // Config SSID and password
-const char* SSID        = "Wireless USB Disk";  // Enter your SSID here
+const char* SSID        = "Wireless-USB-Disk";  // Enter your SSID here
 const char* PASSWORD    = "12345678";           // Enter your Password here
 
 SDCard2USB dev;
@@ -23,39 +24,53 @@ SDCard2USB dev;
 WebServer server(80);
 
 void handleRoot() {
-    if (!server.hasArg("dir")) {
-        server.send(500, "text/plain", "BAD ARGS");
+    String path = "/index.htm";
+    String dataType = "text/html";
+
+    File dataFile = SPIFFS.open(path.c_str());
+    if (!dataFile) {
         return;
     }
 
-    String path = server.arg("dir");
+    if (server.streamFile(dataFile, dataType) != dataFile.size()) {
+        Serial.println("Sent less data than expected!");
+    }
+
+    dataFile.close();
+}
+
+void handleFileList() {
+    String path;
+    if (!server.hasArg("dir")) {
+        path = "/";
+    } else {
+        path = server.arg("dir");
+    }
+
     Serial.println("handleFileList: " + path);
 
     File root = SD.open(path);
-    String output = "<table class=\"fixed\" border=\"1\">"
-        "<col width=\"800px\" /><col width=\"300px\" /><col width=\"300px\" /><col width=\"100px\" />"
-        "<thead><tr><th>Name</th><th>Type</th><th>Size (Bytes)</th><th>Delete</th></tr></thead>"
-        "<tbody>";
+    String output = "[";
 
     if (root && root.isDirectory()) {
         File file = root.openNextFile();
         while (file) {
-            output += "<tr><td><a href=\"/" + String(file.name()) + ">" + String(file.name()) + "</a></td><td>";
-            if(file.isDirectory()){
-                Serial.print("  DIR : ");
-                Serial.println(file.name());
-                output += "dir";
-            } else {
-                Serial.print("  FILE: ");
-                Serial.print(file.name());
-                output += "file";
+            if (output != "[") {
+                output += ',';
             }
 
-            output += "</td><td>" + String(file.size()) + "</td><td>Delete</td></tr>";
+            output += "{\"type\":\"";
+            output += (file.isDirectory()) ? "dir" : "file";
+            output += "\",\"name\":\"";
+            output += String(file.name());
+            output += "\",\"size\":";
+            output += String(file.size());
+            output += "}";
             file = root.openNextFile();
         }
     }
-    server.send(200, "text/html", output);
+    output += "]";
+    server.send(200, "text/json", output);
 }
 
 void createDir(fs::FS &fs, const char * path){
@@ -207,12 +222,16 @@ void testSD()
 
 void startFileServer() {
     server.on("/", HTTP_GET, handleRoot);
+    server.on("/list", HTTP_GET, handleFileList);
     server.begin();
 }
 
 void setup()
 {
   Serial.begin(115200);
+
+  const bool formatOnFail = true;
+  SPIFFS.begin(formatOnFail);
 
   if(dev.initSD(SD_SCK, SD_MISO, SD_MOSI, SD_CS))
   {

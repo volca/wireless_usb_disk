@@ -24,10 +24,16 @@
                 cont.innerHTML = '';
                 res.forEach(i => {
                     cont.innerHTML += 
-                        '<tr><td><a href="#' + i.name + '">' + i.name.substring(1) + '</a></td>' +
-                        '<td>' + i.type + '</td>' +
-                        '<td>' + i.size + '</td>' +
-                        '<td><button>Delete</button></td></tr>';
+                        `<tr>
+                         <td><a href="${i.name}">${i.name.substring(1)}</a></td>
+                         <td>${i.type}</td>
+                         <td>${i.size}</td>
+                         <td>
+                             <form method="post" action="/delete${i.name}">
+                             <button type="submit">Delete</button>
+                             </form>
+                         </td>
+                         </tr>`;
                 });
             };
         };

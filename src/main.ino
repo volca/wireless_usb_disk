@@ -15,7 +15,7 @@
 #define SD_CS    34
 
 // Config SSID and password
-const char* SSID        = "Wireless-USB-Disk";  // Enter your SSID here
+const char* SSID        = "wireless-usb-disk";  // Enter your SSID here
 const char* PASSWORD    = "12345678";           // Enter your Password here
 
 SDCard2USB dev;

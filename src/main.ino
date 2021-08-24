@@ -22,6 +22,8 @@ SDCard2USB dev;
 
 // web server
 WebServer server(80);
+//holds the current upload
+File fsUploadFile;
 
 String getContentType(String filename) {
     if (server.hasArg("download")) {
@@ -60,6 +62,34 @@ void handleIndex() {
     File file = SPIFFS.open(path.c_str());
     server.streamFile(file, contentType);
     file.close();
+}
+
+void handleFileUpload() {
+    if (server.uri() != "/upload") {
+        return;
+    }
+
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+        String filename = upload.filename;
+        if (!filename.startsWith("/")) {
+            filename = "/" + filename;
+        }
+        Serial.print("handleFileUpload Name: "); 
+        Serial.println(filename);
+        fsUploadFile = SD.open(filename, "w");
+        filename = String();
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (fsUploadFile) {
+            fsUploadFile.write(upload.buf, upload.currentSize);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (fsUploadFile) {
+            fsUploadFile.close();
+        }
+        Serial.print("handleFileUpload Size: ");
+        Serial.println(upload.totalSize);
+    }
 }
 
 bool handleFileRead(String path) {
@@ -202,6 +232,10 @@ void testSD()
 void startFileServer() {
     server.on("/list", HTTP_GET, handleFileList);
     server.on("/delete", HTTP_POST, handleFileDelete);
+    server.on("/upload", HTTP_POST, []() {
+        server.sendHeader("Location", String("/"), true);
+        server.send(302, "text/plain", "");
+    }, handleFileUpload);
     server.onNotFound([]() {
         if (!handleFileRead(server.uri())) {
             server.send(404, "text/plain", "FileNotFound");

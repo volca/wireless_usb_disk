@@ -1,6 +1,6 @@
 ### Wireless USB Disk
 
-Using ESP32-S2 as a USB Disk with Wireless accessibility. HTTP file server be used with both upload and download capability.
+Using ESP32-S2 as an USB Disk with Wireless accessibility. HTTP file server be used with both upload and download capability.
 
 Note: It's a demo code. Don't use it in serious application.
 

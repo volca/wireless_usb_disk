@@ -101,9 +101,10 @@ function upload() {
                 var cont = document.querySelector('#cont-files');
                 cont.innerHTML = '';
                 res.forEach(i => {
+                    var name = i.name.charAt(0) == '/' ? i.name.substring(1) : i.name
                     cont.innerHTML += 
                         `<tr>
-                         <td><a href="${i.name}">${i.name.substring(1)}</a></td>
+                         <td><a href="${i.name}">${name}</a></td>
                          <td>${i.type}</td>
                          <td>${i.size}</td>
                          <td>

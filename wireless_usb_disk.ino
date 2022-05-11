@@ -133,9 +133,16 @@ void handleFileDelete() {
     if (path == "/") {
         return server.send(500, "text/plain", "BAD PATH");
     }
+
+    if (!path.startsWith("/")) {
+        path = String("/") + path;
+    }
+
     if (!SD.exists(path)) {
         return server.send(404, "text/plain", "FileNotFound");
     }
+
+    Serial.println("Delete: " + path);
     SD.remove(path);
     server.sendHeader("Location", String("/"), true);
     server.send(302, "text/plain", "");

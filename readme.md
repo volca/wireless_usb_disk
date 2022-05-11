@@ -4,6 +4,19 @@ Using ESP32-S2 as an USB Disk with Wireless accessibility. HTTP file server be u
 
 Note: It's a demo code. Don't use it in serious application.
 
+### Compile
+
+For first time, install arduino-cli
+
+* arduino-cli core update-index
+* arduino-cli core install esp32:esp32
+* arduino-cli core upgrade
+
+compile
+
+* arduino-cli compile .
+* arduino-cli upload -p /dev/cu.usbmodem01
+
 ### Setup
 
 * Default WiFi SSID: `wireless-usb-disk`

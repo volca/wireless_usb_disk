@@ -6,13 +6,15 @@
 #include <WiFiClient.h>
 #include <WiFiAP.h>
 #include <WebServer.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include "sdusb.h"
 
 #define SD_MISO  37
 #define SD_MOSI  35
 #define SD_SCK   36
 #define SD_CS    34
+
+#define SDFS     LittleFS 
 
 // Config SSID and password
 const char* SSID        = "wireless-usb-disk";  // Enter your SSID here
@@ -59,7 +61,7 @@ String getContentType(String filename) {
 void handleIndex() {
     String path = "/index.htm";
     String contentType = "text/html";
-    File file = SPIFFS.open(path.c_str());
+    File file = SDFS.open(path.c_str());
     server.streamFile(file, contentType);
     file.close();
 }
@@ -85,6 +87,7 @@ void handleFileUpload() {
         }
     } else if (upload.status == UPLOAD_FILE_END) {
         if (fsUploadFile) {
+            Serial.println("Uploaded");
             fsUploadFile.close();
         }
         Serial.print("handleFileUpload Size: ");
@@ -99,7 +102,7 @@ bool handleFileRead(String path) {
         return true;
     } else if (path.endsWith("/favicon.ico")) {
         String contentType = "text/x-icon";
-        File file = SPIFFS.open(path.c_str());
+        File file = SDFS.open(path.c_str());
         server.streamFile(file, contentType);
         file.close();
         return true;
@@ -256,7 +259,7 @@ void setup()
   Serial.begin(115200);
 
   const bool formatOnFail = true;
-  SPIFFS.begin(formatOnFail);
+  SDFS.begin(formatOnFail);
 
   if(dev.initSD(SD_SCK, SD_MISO, SD_MOSI, SD_CS))
   {

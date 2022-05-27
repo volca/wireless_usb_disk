@@ -14,7 +14,7 @@
 #define SD_SCK   36
 #define SD_CS    34
 
-#define SDFS     LittleFS 
+#define WUDFS     LittleFS 
 
 // Config SSID and password
 const char* SSID        = "wireless-usb-disk";  // Enter your SSID here
@@ -61,7 +61,7 @@ String getContentType(String filename) {
 void handleIndex() {
     String path = "/index.htm";
     String contentType = "text/html";
-    File file = SDFS.open(path.c_str());
+    File file = WUDFS.open(path.c_str());
     server.streamFile(file, contentType);
     file.close();
 }
@@ -102,7 +102,7 @@ bool handleFileRead(String path) {
         return true;
     } else if (path.endsWith("/favicon.ico")) {
         String contentType = "text/x-icon";
-        File file = SDFS.open(path.c_str());
+        File file = WUDFS.open(path.c_str());
         server.streamFile(file, contentType);
         file.close();
         return true;
@@ -259,7 +259,7 @@ void setup()
   Serial.begin(115200);
 
   const bool formatOnFail = true;
-  SDFS.begin(formatOnFail);
+  WUDFS.begin(formatOnFail);
 
   if(dev.initSD(SD_SCK, SD_MISO, SD_MOSI, SD_CS))
   {

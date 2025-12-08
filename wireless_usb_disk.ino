@@ -7,7 +7,6 @@
 #include <WiFiAP.h>
 #include <WebServer.h>
 #include <LittleFS.h>
-#include "sdusb.h"
 
 #define SD_MISO  37
 #define SD_MOSI  35

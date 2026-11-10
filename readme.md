@@ -18,30 +18,35 @@ pio run -t uploadfs     # writes data/index.htm to LittleFS
 
 * Default AP SSID: `wireless-usb-disk`
 * Default AP password: `12345678`
-* Web UI: http://192.168.4.1/
+* Web UI: http://192.168.4.1/ (access-point mode)
 * SD card (SPI): SCK=36, MISO=37, MOSI=35, CS=34
 * Plug the **native USB** port (not the UART bridge) into the host
 
 ### WiFi
 
-WiFi is handled by [WiFiManager](https://github.com/tzapu/WiFiManager)
-(`tzapu/WiFiManager@^2.0.17`):
+The web UI has a **WiFi** card that selects the radio mode; the choice is
+stored in NVS and applied on boot. Only one of AP / STA runs at a time.
 
-* On boot the device tries the station credentials stored in NVS.
-* If none are stored, or the saved network cannot be reached, it opens the
-  captive configuration portal on its own AP (`wireless-usb-disk` /
-  `12345678`). The portal times out after 180 s; the device then keeps running
-  as access point only.
-* The AP stays enabled (`WIFI_AP_STA`), so the file manager is always reachable
-  at http://192.168.4.1/. When a station connection also succeeds, the
-  router-assigned IP is printed on the serial console.
-* With a station connection, mDNS is started so the file manager is also
-  reachable at http://wud.local/ (no mDNS in access-point-only mode).
-* **WiFi Setup** in the web UI (`POST /resetwifi`) erases the saved credentials
-  and opens the configuration portal in place, on the same AP/IP, without a
-  reboot. The file server is paused while the portal runs (both use port 80).
-  Saving the form reconnects the device and restarts it; closing the portal
-  without saving returns to the normal AP + file server after 5 minutes.
+* **Access point only** (default): `WIFI_AP` with SSID `wireless-usb-disk` /
+  `12345678`, file manager at http://192.168.4.1/. No station link, no mDNS,
+  no ArduinoOTA. The radio never time-shares between AP and STA, which keeps
+  the power draw down.
+* **Station**: joins the network configured through the WiFiManager portal
+  (`tzapu/WiFiManager@^2.0.17`). The router-assigned IP is printed on the
+  serial console, mDNS publishes `wud.local`, and the ArduinoOTA server
+  (port 3232) starts. If no credentials are stored, or the network cannot be
+  reached, the configuration portal opens on a temporary AP; after the 180 s
+  timeout the device falls back to access-point-only mode so it stays
+  reachable.
+* Switching modes (`POST /wifimode` with `mode=ap` or `mode=sta`) saves the
+  choice and reboots the device.
+* **WiFi Setup** (`POST /resetwifi`) erases the saved credentials and opens
+  the WiFiManager portal in place; the file server pauses while the portal
+  owns port 80. Saving credentials switches the device to station mode and
+  reboots.
+
+In access-point mode there is no `wud.local` and no ArduinoOTA; in station
+mode there is no 192.168.4.1.
 
 ### OTA update
 

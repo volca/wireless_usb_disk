@@ -2,68 +2,353 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireless USB Disk</title>
+<style>
+    :root {
+        --bg: #f1f3f6;
+        --card: #ffffff;
+        --border: #e3e7ee;
+        --text: #1f2937;
+        --muted: #6b7280;
+        --accent: #2563eb;
+        --accent-dark: #1d4ed8;
+        --danger: #dc2626;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                     "Helvetica Neue", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+        line-height: 1.45;
+    }
+
+    header {
+        text-align: center;
+        padding: 30px 16px 6px;
+    }
+
+    header h1 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+    }
+
+    header p {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+    }
+
+    main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 18px 16px 32px;
+    }
+
+    .panels {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: stretch;
+    }
+
+    .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 18px 20px;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+        flex: 1 1 340px;
+        min-width: 300px;
+    }
+
+    .card h2 {
+        margin: 0 0 14px;
+        font-size: 15px;
+        font-weight: 600;
+    }
+
+    .field { margin-bottom: 12px; }
+
+    .field label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: var(--muted);
+    }
+
+    input[type="file"],
+    select {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid #d5dae2;
+        border-radius: 8px;
+        background: #fafbfc;
+        color: var(--text);
+        font-size: 13px;
+    }
+
+    input[type="file"]:focus,
+    select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+    }
+
+    .row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+    }
+
+    button {
+        appearance: none;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        background: var(--accent);
+        color: #fff;
+        transition: background 0.15s ease;
+    }
+
+    button:hover:not(:disabled) { background: var(--accent-dark); }
+
+    button:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    button.secondary {
+        background: #fff;
+        color: #374151;
+        border-color: #d5dae2;
+    }
+
+    button.secondary:hover:not(:disabled) { background: #f3f4f6; }
+
+    .status {
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+    }
+
+    .hint {
+        margin: 14px 0 0;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+    }
+
+    dialog {
+        border: none;
+        border-radius: 12px;
+        padding: 20px 22px;
+        width: min(420px, calc(100vw - 32px));
+        color: var(--text);
+        box-shadow: 0 20px 48px rgba(16, 24, 40, 0.22);
+    }
+
+    dialog::backdrop { background: rgba(17, 24, 39, 0.35); }
+
+    dialog h2 {
+        margin: 0 0 16px;
+        font-size: 16px;
+        font-weight: 600;
+    }
+
+    .dialog-actions {
+        margin-top: 16px;
+        justify-content: flex-end;
+    }
+
+    dialog .status {
+        margin: 12px 0 0;
+    }
+
+    dialog .status:empty { display: none; }
+
+
+    .list {
+        margin-top: 20px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+    }
+
+    .list table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .list th,
+    .list td {
+        padding: 11px 16px;
+        text-align: left;
+        border-bottom: 1px solid #eef1f5;
+    }
+
+    .list th {
+        background: #f8fafc;
+        color: #4b5563;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .list tbody tr:last-child td { border-bottom: none; }
+    .list tbody tr:hover { background: #f9fafb; }
+
+    .list a {
+        color: var(--accent);
+        text-decoration: none;
+    }
+
+    .list a:hover { text-decoration: underline; }
+
+    .list form { margin: 0; }
+
+    .list td form button {
+        padding: 5px 12px;
+        font-size: 12px;
+        background: #fff;
+        color: var(--danger);
+        border-color: #fbd5d5;
+    }
+
+    .list td form button:hover:not(:disabled) { background: #fef2f2; }
+
+    footer {
+        text-align: center;
+        padding: 8px 16px 28px;
+        color: #9aa3b2;
+        font-size: 12px;
+    }
+
+    @media (max-width: 720px) {
+        header { padding-top: 22px; }
+        .list { overflow-x: auto; }
+    }
+</style>
 </head>
 <body>
-    <table class="fixed" border="0">
-    <col width="1000px" /><col width="500px" />
-    <tr><td>
-        <h2>ESP32S2 USB File Server</h2>
-    </td><td>
-        <table border="0">
-            <tr>
-                <td>
-                    <label for="newfile">Upload files</label>
-                </td>
-                <td>
-                    <input id="newfile" type="file" multiple onchange="setpath()" style="width:100%;">
-                </td>
-            </tr>
-            <tr>
-                <td></td>
-                <td>
+    <header>
+        <h1>Wireless USB Disk</h1>
+        <p>ESP32-S2 &middot; SD card over USB (MSC) and WiFi</p>
+    </header>
+
+    <main>
+        <div class="panels">
+            <section class="card">
+                <h2>Upload files</h2>
+                <div class="field">
+                    <label for="newfile">Files (max 20 MB each)</label>
+                    <input id="newfile" type="file" multiple onchange="setpath()">
+                </div>
+                <div class="row">
                     <button id="upload" type="button" onclick="upload()">Upload</button>
-                    <span id="uploadinfo"></span>
-                </td>
-            </tr>
-            <tr>
-                <td></td>
-                <td>
-                    <button id="reset" type="button" onclick="resetDevice()">Reset ESP32</button>
-                    <button id="resetwifi" type="button" onclick="resetWifi()">WiFi Setup</button>
-                </td>
-            </tr>
-            <tr>
-                <td>
-                    <label for="otafile">Update (OTA)</label>
-                </td>
-                <td>
-                    <input id="otafile" type="file" accept=".bin" style="width:100%;">
-                </td>
-            </tr>
-            <tr>
-                <td></td>
-                <td>
-                    <select id="otatarget">
-                        <option value="fw">Firmware</option>
-                        <option value="fs">Filesystem (LittleFS)</option>
-                    </select>
-                    <button id="otabtn" type="button" onclick="otaUpload()">Update</button>
-                    <span id="otainfo"></span>
-                </td>
-            </tr>
-        </table>
-    </td></tr>
-    </table>
-    <table class="fixed" border="1">
-        <col width="800px" /><col width="300px" /><col width="300px" /><col width="100px" />
-        <thead>
-            <tr><th>Name</th><th>Type</th><th>Size (Bytes)</th><th>Delete</th></tr>
-        </thead>
-        <tbody id="cont-files">
-        </tbody>
-    </table>
-</body>
+                    <span id="uploadinfo" class="status"></span>
+                </div>
+                <div class="row" style="margin-top: 16px;">
+                    <button id="reset" type="button" class="secondary" onclick="resetDevice()">Reset ESP32</button>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Tools</h2>
+                <div class="row">
+                    <button type="button" onclick="openDialog('otaDialog')">Update (OTA)</button>
+                    <button type="button" class="secondary" onclick="openDialog('wifiDialog')">WiFi settings</button>
+                </div>
+                <p class="hint">Firmware / filesystem update, and the WiFi radio mode.</p>
+            </section>
+        </div>
+
+        <div class="list">
+            <table>
+                <thead>
+                    <tr><th>Name</th><th>Type</th><th>Size (bytes)</th><th>Delete</th></tr>
+                </thead>
+                <tbody id="cont-files"></tbody>
+            </table>
+        </div>
+    </main>
+
+    <footer>wireless-usb-disk &middot; ESP32-S2</footer>
+
+    <dialog id="otaDialog">
+        <h2>Update (OTA)</h2>
+        <div class="field">
+            <label for="otatarget">Target</label>
+            <select id="otatarget">
+                <option value="fw">Firmware</option>
+                <option value="fs">Filesystem (LittleFS)</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="otafile">Image (.bin)</label>
+            <input id="otafile" type="file" accept=".bin">
+        </div>
+        <div class="row dialog-actions">
+            <button id="otabtn" type="button" onclick="otaUpload()">Update</button>
+            <button type="button" class="secondary" onclick="closeDialog('otaDialog')">Close</button>
+        </div>
+        <p class="status" id="otainfo"></p>
+    </dialog>
+
+    <dialog id="wifiDialog">
+        <h2>WiFi settings</h2>
+        <div class="field">
+            <label for="wifimode">Mode</label>
+            <select id="wifimode">
+                <option value="ap">Access point only</option>
+                <option value="sta">Station (join network)</option>
+            </select>
+        </div>
+        <div class="row dialog-actions">
+            <button id="wifimodebtn" type="button" onclick="applyWifiMode()">Apply</button>
+            <button id="resetwifi" type="button" class="secondary" onclick="resetWifi()">WiFi Setup</button>
+            <button type="button" class="secondary" onclick="closeDialog('wifiDialog')">Close</button>
+        </div>
+        <p class="status" id="wifimodeinfo"></p>
+        <p class="hint">Access point: 192.168.4.1 only, no station link (lower power).
+        Station: joins the saved network, also answers on wud.local.</p>
+    </dialog>
+
 <script>
+function openDialog(id) {
+    var dialog = document.getElementById(id);
+    if (!dialog) {
+        return;
+    }
+    if (dialog.showModal) {
+        dialog.showModal();
+    } else {
+        dialog.setAttribute("open", "");
+    }
+}
+
+function closeDialog(id) {
+    var dialog = document.getElementById(id);
+    if (dialog && dialog.close) {
+        dialog.close();
+    }
+}
+
 function setpath() {
     var files = document.getElementById("newfile").files;
     var info = document.getElementById("uploadinfo");
@@ -101,6 +386,34 @@ function resetWifi() {
     };
     xh.open("POST", "/resetwifi", true);
     xh.send(null);
+}
+
+function applyWifiMode() {
+    var mode = document.getElementById("wifimode").value;
+    var label = mode == "sta" ? "Station" : "Access point";
+    if (!confirm("Switch WiFi to " + label + " mode and reboot?")) {
+        return;
+    }
+
+    document.getElementById("wifimodebtn").disabled = true;
+    var xh = new XMLHttpRequest();
+    xh.onreadystatechange = function() {
+        if (xh.readyState != 4) {
+            return;
+        }
+        if (xh.status == 200) {
+            document.getElementById("wifimodeinfo").textContent =
+                "Rebooting, reopen the page at " +
+                (mode == "sta" ? "wud.local or the new IP" : "192.168.4.1");
+            setTimeout(function() { location.reload(); }, 10000);
+        } else {
+            alert("Failed: " + xh.status + " " + xh.responseText);
+            document.getElementById("wifimodebtn").disabled = false;
+        }
+    };
+    xh.open("POST", "/wifimode", true);
+    xh.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+    xh.send("mode=" + mode);
 }
 
 function upload() {
@@ -253,6 +566,16 @@ function otaUpload() {
     };
 
     loadFiles(window.location.pathname);
+})();
+(function() {
+    var xh = new XMLHttpRequest();
+    xh.onreadystatechange = function() {
+        if (xh.readyState == 4 && xh.status == 200) {
+            document.getElementById("wifimode").value = xh.responseText.trim();
+        }
+    };
+    xh.open("GET", "/wifimode", true);
+    xh.send(null);
 })();
 </script>
 </html>

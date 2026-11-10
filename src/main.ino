@@ -11,6 +11,7 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <WiFiManager.h>
+#include <Preferences.h>
 #include <LittleFS.h>
 #include <Update.h>
 #include <ArduinoOTA.h>
@@ -37,6 +38,10 @@ const char* PASSWORD    = "12345678";
 #define OTA_PORT      3232
 #define OTA_PASSWORD  "wud"
 
+// WiFi mode selected in the web UI and stored in NVS.
+#define WUD_MODE_AP   0
+#define WUD_MODE_STA  1
+
 USBMSC MSC;
 WiFiManager wm;
 
@@ -50,6 +55,22 @@ static bool sdReady = false;
 static uint32_t sdSectorSize = 0;
 static bool resetPending = false;
 static uint32_t resetAt = 0;
+static uint8_t wifiMode = WUD_MODE_AP;
+
+static uint8_t loadWifiMode() {
+    Preferences prefs;
+    prefs.begin("wud", false);
+    const uint8_t mode = prefs.getUChar("wmode", WUD_MODE_AP);
+    prefs.end();
+    return (mode == WUD_MODE_STA) ? WUD_MODE_STA : WUD_MODE_AP;
+}
+
+static void saveWifiMode(uint8_t mode) {
+    Preferences prefs;
+    prefs.begin("wud", false);
+    prefs.putUChar("wmode", mode);
+    prefs.end();
+}
 
 static inline void sdLock() {
     if (sdMutex) {
@@ -487,6 +508,28 @@ void sendOtaResult() {
     server.send(500, "text/plain", error);
 }
 
+void handleWifiMode() {
+    if (server.method() == HTTP_GET) {
+        server.send(200, "text/plain", wifiMode == WUD_MODE_STA ? "sta" : "ap");
+        return;
+    }
+
+    const String mode = server.arg("mode");
+    if (mode != "ap" && mode != "sta") {
+        server.send(400, "text/plain", "mode must be ap or sta");
+        return;
+    }
+
+    wifiMode = (mode == "sta") ? WUD_MODE_STA : WUD_MODE_AP;
+    saveWifiMode(wifiMode);
+    Serial.printf("WiFi mode set to %s, rebooting\n",
+                  wifiMode == WUD_MODE_STA ? "station" : "access point");
+
+    server.send(200, "text/plain", "Mode saved, rebooting...");
+    resetPending = true;
+    resetAt = millis() + 800;
+}
+
 void handleReset() {
     server.send(200, "text/plain", "Rebooting...");
     // Give the response a moment to leave the TCP stack before restarting.
@@ -498,6 +541,8 @@ void startFileServer() {
     server.on("/list", HTTP_GET, handleFileList);
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/resetwifi", HTTP_POST, handleWifiReset);
+    server.on("/wifimode", HTTP_GET, handleWifiMode);
+    server.on("/wifimode", HTTP_POST, handleWifiMode);
     server.on("/ota_fw", HTTP_POST, sendOtaResult, handleOTA);
     server.on("/ota_fs", HTTP_POST, sendOtaResult, handleOTA);
     server.on("/delete", HTTP_POST, handleFileDelete);
@@ -546,7 +591,7 @@ void startArduinoOTA() {
     });
 
     ArduinoOTA.begin();
-    Serial.printf("ArduinoOTA ready on port %u\n", OTA_PORT);
+    Serial.printf("ArduinoOTA ready on %s:%u\n", WiFi.localIP().toString().c_str(), OTA_PORT);
 }
 
 void setup()
@@ -582,47 +627,53 @@ void setup()
 
   USB.begin();
 
-  // WiFi: use credentials configured through the captive portal. On the
-  // first boot, or when the saved network is unreachable, the device starts
-  // its own access point so the credentials can be entered.
-  wm.setConnectTimeout(20);
-  wm.setWiFiAutoReconnect(true);
-  wm.setAPCallback([](WiFiManager *) {
-    Serial.print("WiFi config portal: http://");
-    Serial.println(WiFi.softAPIP());
-  });
+  // WiFi mode is selected in the web UI: access point only (lower power, no
+  // station link) or station (join a network, mDNS and ArduinoOTA available).
+  wifiMode = loadWifiMode();
+  bool staConnected = false;
 
-  wm.setConfigPortalTimeout(180);
-  if (wm.autoConnect(SSID, PASSWORD)) {
-    Serial.print("WiFi connected: ");
-    Serial.print(WiFi.SSID());
-    Serial.print(" -> ");
-    Serial.println(WiFi.localIP());
+  if (wifiMode == WUD_MODE_STA) {
+    wm.setConnectTimeout(20);
+    wm.setWiFiAutoReconnect(true);
+    wm.setAPCallback([](WiFiManager *) {
+      Serial.print("WiFi config portal: http://");
+      Serial.println(WiFi.softAPIP());
+    });
+    wm.setConfigPortalTimeout(180);
 
-    // Station mode only: publish wud.local on the LAN.
-    if (MDNS.begin("wud")) {
-      MDNS.addService("http", "tcp", 80);
-      Serial.println("mDNS: http://wud.local/");
+    staConnected = wm.autoConnect(SSID, PASSWORD);
+    if (staConnected) {
+      Serial.print("WiFi connected: ");
+      Serial.print(WiFi.SSID());
+      Serial.print(" -> ");
+      Serial.println(WiFi.localIP());
+
+      if (MDNS.begin("wud")) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.println("mDNS: http://wud.local/");
+      } else {
+        Serial.println("mDNS start failed");
+      }
     } else {
-      Serial.println("mDNS start failed");
+      Serial.println("Station mode: no connection, falling back to access point");
     }
+  } else {
+    Serial.println("WiFi mode: access point only");
+  }
 
-    // espota is only offered on the station interface: in access-point-only
-    // mode there is no wud.local to upload to.
+  if (staConnected) {
+    // Data transfers are throttled by modem sleep on the station link.
+    WiFi.setSleep(false);
     startArduinoOTA();
   } else {
-    Serial.println("WiFi not configured, access point only");
+    // Access point only: no station link, no mDNS, no ArduinoOTA.
+    WiFi.mode(WIFI_AP);
+    if (!WiFi.softAP(SSID, PASSWORD)) {
+      Serial.println("Failed to start access point");
+    }
+    Serial.print("AP IP: ");
+    Serial.println(WiFi.softAPIP());
   }
-
-  // Keep the local AP running so the file manager is always reachable at
-  // 192.168.4.1, even when a station connection exists.
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.setSleep(false);  // modem sleep throttles throughput badly
-  if (!WiFi.softAP(SSID, PASSWORD)) {
-    Serial.println("Failed to start access point");
-  }
-  Serial.print("AP IP: ");
-  Serial.println(WiFi.softAPIP());
 
   delay(1000);
   startFileServer();
@@ -641,6 +692,10 @@ void loop() {
     wm.setConfigPortalTimeout(300);  // give up after 5 minutes of inactivity
     const bool saved = wm.startConfigPortal(SSID, PASSWORD);
     Serial.printf("WiFi setup portal closed, saved=%d\n", saved);
+    if (saved) {
+      // Credentials were entered, so the device belongs on the station link.
+      saveWifiMode(WUD_MODE_STA);
+    }
 
     // Reboot to apply the new network (or to restore the file server).
     delay(500);

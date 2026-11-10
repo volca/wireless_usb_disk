@@ -12,17 +12,43 @@
         <table border="0">
             <tr>
                 <td>
-                    <label for="newfile">Upload a file</label>
+                    <label for="newfile">Upload files</label>
                 </td>
                 <td>
-                    <input id="filepath" type="hidden">
-                    <input id="newfile" type="file" onchange="setpath()" style="width:100%;">
+                    <input id="newfile" type="file" multiple onchange="setpath()" style="width:100%;">
                 </td>
             </tr>
             <tr>
                 <td></td>
                 <td>
                     <button id="upload" type="button" onclick="upload()">Upload</button>
+                    <span id="uploadinfo"></span>
+                </td>
+            </tr>
+            <tr>
+                <td></td>
+                <td>
+                    <button id="reset" type="button" onclick="resetDevice()">Reset ESP32</button>
+                    <button id="resetwifi" type="button" onclick="resetWifi()">WiFi Setup</button>
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <label for="otafile">Update (OTA)</label>
+                </td>
+                <td>
+                    <input id="otafile" type="file" accept=".bin" style="width:100%;">
+                </td>
+            </tr>
+            <tr>
+                <td></td>
+                <td>
+                    <select id="otatarget">
+                        <option value="fw">Firmware</option>
+                        <option value="fs">Filesystem (LittleFS)</option>
+                    </select>
+                    <button id="otabtn" type="button" onclick="otaUpload()">Update</button>
+                    <span id="otainfo"></span>
                 </td>
             </tr>
         </table>
@@ -39,14 +65,47 @@
 </body>
 <script>
 function setpath() {
-    var default_path = document.getElementById("newfile").files[0].name;
-    document.getElementById("filepath").value = default_path;
+    var files = document.getElementById("newfile").files;
+    var info = document.getElementById("uploadinfo");
+    info.textContent = files.length == 0 ? "" :
+        files.length + (files.length == 1 ? " file selected" : " files selected");
+}
+
+function resetDevice() {
+    if (!confirm("Reboot the ESP32-S2?")) {
+        return;
+    }
+    document.getElementById("reset").disabled = true;
+    var xh = new XMLHttpRequest();
+    xh.onreadystatechange = function() {
+        if (xh.readyState == 4) {
+            document.body.innerHTML = "<h2>Rebooting...</h2><p>This page will reload in a few seconds.</p>";
+            setTimeout(function() { location.reload(); }, 5000);
+        }
+    };
+    xh.open("POST", "/reset", true);
+    xh.send(null);
+}
+
+function resetWifi() {
+    if (!confirm("Clear the saved WiFi network and open the setup portal?")) {
+        return;
+    }
+    document.getElementById("resetwifi").disabled = true;
+    var xh = new XMLHttpRequest();
+    xh.onreadystatechange = function() {
+        if (xh.readyState == 4) {
+            document.body.innerHTML = "<h2>Starting WiFi setup...</h2><p>The configuration portal will open in a few seconds.</p>";
+            setTimeout(function() { location.href = "/"; }, 6000);
+        }
+    };
+    xh.open("POST", "/resetwifi", true);
+    xh.send(null);
 }
 
 function upload() {
-    var filePath = document.getElementById("filepath").value;
-    var upload_path = "/upload";
     var fileInput = document.getElementById("newfile").files;
+    var info = document.getElementById("uploadinfo");
 
     /* Max size of an individual file. Make sure this
      * value is same as that set in file_server.c */
@@ -55,41 +114,113 @@ function upload() {
 
     if (fileInput.length == 0) {
         alert("No file selected!");
-    } else if (filePath.length == 0) {
-        alert("File path on server is not set!");
-    } else if (filePath.indexOf(' ') >= 0) {
-        alert("File path on server cannot have spaces!");
-    } else if (filePath[filePath.length-1] == '/') {
-        alert("File name not specified after path!");
-    } else if (fileInput[0].size > MAX_FILE_SIZE) {
-        alert("File size must be less than " + MAX_FILE_SIZE_STR);
-    } else {
-        document.getElementById("newfile").disabled = true;
-        document.getElementById("filepath").disabled = true;
-        document.getElementById("upload").disabled = true;
+        return;
+    }
 
-        var file = fileInput[0];
-        var xh = new XMLHttpRequest();
-        xh.onreadystatechange = function() {
-            if (xh.readyState == 4) {
-                if (xh.status == 200) {
-                    document.open();
-                    document.write(xh.responseText);
-                    document.close();
-                } else if (xh.status == 0) {
-                    alert("Server closed the connection abruptly!");
-                    location.reload()
-                } else {
-                    alert(xh.status + " Error!\n" + xh.responseText);
-                    location.reload()
-                }
+    for (var i = 0; i < fileInput.length; i++) {
+        if (fileInput[i].size > MAX_FILE_SIZE) {
+            alert(fileInput[i].name + " must be less than " + MAX_FILE_SIZE_STR);
+            return;
+        }
+    }
+
+    document.getElementById("newfile").disabled = true;
+    document.getElementById("upload").disabled = true;
+
+    var index = 0;
+    var failed = [];
+
+    function sendNext() {
+        if (index >= fileInput.length) {
+            if (failed.length) {
+                info.textContent = "Finished with errors: " + failed.join(", ");
+                alert("Upload failed for: " + failed.join(", "));
+            } else {
+                info.textContent = "Upload finished, reloading...";
             }
+            setTimeout(function() { location.reload(); }, 1000);
+            return;
+        }
+
+        var file = fileInput[index];
+        var startedAt = Date.now();
+        info.textContent = "Uploading " + (index + 1) + "/" + fileInput.length + ": " + file.name;
+
+        var xh = new XMLHttpRequest();
+        xh.upload.onprogress = function(e) {
+            if (!e.lengthComputable || e.loaded == 0) {
+                return;
+            }
+            var secs = (Date.now() - startedAt) / 1000;
+            var kbs = secs > 0 ? Math.round(e.loaded / 1024 / secs) : 0;
+            info.textContent = "Uploading " + (index + 1) + "/" + fileInput.length +
+                ": " + file.name + " " + Math.round(e.loaded * 100 / e.total) +
+                "% (" + kbs + " KB/s)";
+        };
+        xh.onreadystatechange = function() {
+            if (xh.readyState != 4) {
+                return;
+            }
+            if (xh.status != 200) {
+                failed.push(file.name);
+            }
+            index++;
+            sendNext();
         };
         var formData = new FormData();
         formData.append("filename", file);
-        xh.open("POST", upload_path);
+        xh.open("POST", "/upload");
+        xh.setRequestHeader("X-Requested-With", "XMLHttpRequest");
         xh.send(formData);
     }
+
+    sendNext();
+}
+
+function otaUpload() {
+    var input = document.getElementById("otafile");
+    var target = document.getElementById("otatarget").value;
+    var info = document.getElementById("otainfo");
+
+    if (input.files.length == 0) {
+        alert("No file selected!");
+        return;
+    }
+
+    var label = target == "fs" ? "filesystem" : "firmware";
+    if (!confirm("Update the " + label + "? The device restarts when done.")) {
+        return;
+    }
+
+    var file = input.files[0];
+    input.disabled = true;
+    document.getElementById("otabtn").disabled = true;
+    info.textContent = "0%";
+
+    var xh = new XMLHttpRequest();
+    xh.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+            info.textContent = Math.round(e.loaded * 100 / e.total) + "%";
+        }
+    };
+    xh.onreadystatechange = function() {
+        if (xh.readyState != 4) {
+            return;
+        }
+        if (xh.status == 200) {
+            info.textContent = "Update complete, rebooting...";
+            setTimeout(function() { location.reload(); }, 10000);
+        } else {
+            alert("Update failed: " + xh.status + "\n" + xh.responseText);
+            info.textContent = "";
+            input.disabled = false;
+            document.getElementById("otabtn").disabled = false;
+        }
+    };
+    var formData = new FormData();
+    formData.append("update", file);
+    xh.open("POST", target == "fs" ? "/ota_fs" : "/ota_fw");
+    xh.send(formData);
 }
 
 (function() {

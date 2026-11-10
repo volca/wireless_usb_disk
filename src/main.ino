@@ -9,7 +9,11 @@
 #include <WiFiClient.h>
 #include <WiFiAP.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
+#include <WiFiManager.h>
 #include <LittleFS.h>
+#include <Update.h>
+#include <ArduinoOTA.h>
 #include <SPI.h>
 #include <SD.h>
 #include <USB.h>
@@ -24,11 +28,17 @@
 
 #define WUDFS     LittleFS
 
-// Config SSID and password
-const char* SSID        = "wireless-usb-disk";  // Enter your SSID here
-const char* PASSWORD    = "12345678";           // Enter your Password here
+// Local access point used by the file manager and by the WiFiManager
+// configuration portal.
+const char* SSID        = "wireless-usb-disk";
+const char* PASSWORD    = "12345678";
+
+// ArduinoOTA server, used by the espota PlatformIO environment.
+#define OTA_PORT      3232
+#define OTA_PASSWORD  "wud"
 
 USBMSC MSC;
+WiFiManager wm;
 
 // web server
 WebServer server(80);
@@ -38,6 +48,8 @@ File fsUploadFile;
 static SemaphoreHandle_t sdMutex = NULL;
 static bool sdReady = false;
 static uint32_t sdSectorSize = 0;
+static bool resetPending = false;
+static uint32_t resetAt = 0;
 
 static inline void sdLock() {
     if (sdMutex) {
@@ -197,6 +209,7 @@ void handleIndex() {
     String path = "/index.htm";
     String contentType = "text/html";
     File file = WUDFS.open(path.c_str());
+    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     server.streamFile(file, contentType);
     file.close();
 }
@@ -205,6 +218,7 @@ void handleIndex() {
 // interleave its transfers while a large download is in progress.
 void streamSDFile(File& file, String contentType) {
     server.setContentLength(file.size());
+    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     server.send(200, contentType, "");
 
     uint8_t buf[512];
@@ -219,6 +233,10 @@ void streamSDFile(File& file, String contentType) {
     }
 }
 
+static String uploadPath;
+static uint32_t uploadStartMs = 0;
+static uint32_t uploadBytes = 0;
+
 void handleFileUpload() {
     if (server.uri() != "/upload") {
         return;
@@ -226,31 +244,53 @@ void handleFileUpload() {
 
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
-        String filename = upload.filename;
-        if (!filename.startsWith("/")) {
-            filename = "/" + filename;
+        uploadPath = upload.filename;
+        if (!uploadPath.startsWith("/")) {
+            uploadPath = "/" + uploadPath;
         }
-        Serial.print("handleFileUpload Name: ");
-        Serial.println(filename);
+        uploadStartMs = millis();
+        uploadBytes = 0;
+        Serial.print("Upload: ");
+        Serial.println(uploadPath);
         sdLock();
-        fsUploadFile = SD.open(filename, "w");
+        fsUploadFile = SD.open(uploadPath, "w");
         sdUnlock();
-        filename = String();
+        if (!fsUploadFile) {
+            Serial.println("Upload: cannot open file");
+        }
     } else if (upload.status == UPLOAD_FILE_WRITE) {
         if (fsUploadFile) {
             sdLock();
-            fsUploadFile.write(upload.buf, upload.currentSize);
+            const size_t written = fsUploadFile.write(upload.buf, upload.currentSize);
             sdUnlock();
+            uploadBytes += written;
+            if (written != upload.currentSize) {
+                Serial.printf("Upload: short write %u/%u\n", (unsigned)written,
+                              (unsigned)upload.currentSize);
+            }
         }
     } else if (upload.status == UPLOAD_FILE_END) {
         if (fsUploadFile) {
-            Serial.println("Uploaded");
             sdLock();
             fsUploadFile.close();
             sdUnlock();
         }
-        Serial.print("handleFileUpload Size: ");
-        Serial.println(upload.totalSize);
+        const uint32_t elapsed = millis() - uploadStartMs;
+        const uint32_t kbs = elapsed ? (uint32_t)((uint64_t)uploadBytes * 1000 / elapsed / 1024) : 0;
+        Serial.printf("Upload done: %u bytes in %u ms (%u KB/s)\n",
+                      (unsigned)uploadBytes, (unsigned)elapsed, (unsigned)kbs);
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (fsUploadFile) {
+            sdLock();
+            fsUploadFile.close();
+            sdUnlock();
+        }
+        if (uploadPath.length()) {
+            sdLock();
+            SD.remove(uploadPath);
+            sdUnlock();
+        }
+        Serial.println("Upload aborted, partial file removed");
     }
 }
 
@@ -366,10 +406,108 @@ void handleFileList() {
     server.send(200, "text/json", output);
 }
 
+// Start the WiFiManager configuration portal in place (no reboot needed).
+// The file server must give up port 80 first, so the switch happens shortly
+// after the HTTP response has been sent.
+static bool wifiSetupPending = false;
+static uint32_t wifiSetupAt = 0;
+
+void handleWifiReset() {
+    server.send(200, "text/html",
+                "<html><body><h2>Starting WiFi setup...</h2>"
+                "<p>The configuration portal will open in a few seconds.</p>"
+                "<script>setTimeout(function(){location.href='/';},6000);</script>"
+                "</body></html>");
+    wifiSetupPending = true;
+    wifiSetupAt = millis() + 1500;
+}
+
+//--------------------------------------------------------------------+
+// OTA update: /ota_fw writes the app partition, /ota_fs the LittleFS one
+//--------------------------------------------------------------------+
+
+static bool otaFsTarget = false;
+static bool otaOk = false;
+
+void handleOTA() {
+    HTTPUpload& upload = server.upload();
+
+    if (upload.status == UPLOAD_FILE_START) {
+        otaFsTarget = (server.uri() == "/ota_fs");
+        otaOk = false;
+        Serial.printf("OTA start (%s): %s\n",
+                      otaFsTarget ? "filesystem" : "firmware",
+                      upload.filename.c_str());
+
+        if (otaFsTarget) {
+            // The new image replaces the mounted partition.
+            WUDFS.end();
+        }
+
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, otaFsTarget ? U_SPIFFS : U_FLASH)) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (Update.isRunning() &&
+            Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) {
+            otaOk = true;
+            Serial.printf("OTA written: %u bytes\n", (unsigned)upload.totalSize);
+        } else {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        Update.abort();
+        Serial.println("OTA aborted");
+    }
+}
+
+void sendOtaResult() {
+    if (otaOk) {
+        server.send(200, "text/plain", "Update OK, rebooting");
+        resetPending = true;
+        resetAt = millis() + 800;
+        return;
+    }
+
+    const String error = Update.errorString();
+
+    // Bring the file manager back if the filesystem image was not applied.
+    if (otaFsTarget) {
+        otaFsTarget = false;
+        if (!WUDFS.begin(false)) {
+            Serial.println("LittleFS remount failed");
+        }
+    }
+    Update.abort();
+
+    server.send(500, "text/plain", error);
+}
+
+void handleReset() {
+    server.send(200, "text/plain", "Rebooting...");
+    // Give the response a moment to leave the TCP stack before restarting.
+    resetPending = true;
+    resetAt = millis() + 800;
+}
+
 void startFileServer() {
     server.on("/list", HTTP_GET, handleFileList);
+    server.on("/reset", HTTP_POST, handleReset);
+    server.on("/resetwifi", HTTP_POST, handleWifiReset);
+    server.on("/ota_fw", HTTP_POST, sendOtaResult, handleOTA);
+    server.on("/ota_fs", HTTP_POST, sendOtaResult, handleOTA);
     server.on("/delete", HTTP_POST, handleFileDelete);
     server.on("/upload", HTTP_POST, []() {
+        // XHR uploads get a plain ack so multi-file uploads do not re-fetch
+        // the page after every request; a plain form post goes back home.
+        if (server.hasHeader("X-Requested-With")) {
+            server.send(200, "text/plain", "OK");
+            return;
+        }
         server.sendHeader("Location", String("/"), true);
         server.send(302, "text/plain", "");
     }, handleFileUpload);
@@ -379,6 +517,36 @@ void startFileServer() {
         }
     });
     server.begin();
+}
+
+//--------------------------------------------------------------------+
+// ArduinoOTA: upload target for `pio run -e espota -t upload`
+//--------------------------------------------------------------------+
+
+void startArduinoOTA() {
+    ArduinoOTA.setHostname("wud");
+    ArduinoOTA.setPort(OTA_PORT);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    // mDNS is already running for wud.local; a second mdns_init() would fail,
+    // so ArduinoOTA must not register its own instance.
+    ArduinoOTA.setMdnsEnabled(false);
+
+    ArduinoOTA.onStart([]() {
+        Serial.printf("ArduinoOTA: start (%s)\n",
+                      ArduinoOTA.getCommand() == U_FLASH ? "firmware" : "filesystem");
+    });
+    ArduinoOTA.onEnd([]() {
+        Serial.println("\nArduinoOTA: done");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("ArduinoOTA: %u%%\r", progress * 100 / total);
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("ArduinoOTA error[%u]\n", error);
+    });
+
+    ArduinoOTA.begin();
+    Serial.printf("ArduinoOTA ready on port %u\n", OTA_PORT);
 }
 
 void setup()
@@ -414,15 +582,79 @@ void setup()
 
   USB.begin();
 
-  delay(1000);
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(SSID, PASSWORD);
+  // WiFi: use credentials configured through the captive portal. On the
+  // first boot, or when the saved network is unreachable, the device starts
+  // its own access point so the credentials can be entered.
+  wm.setConnectTimeout(20);
+  wm.setWiFiAutoReconnect(true);
+  wm.setAPCallback([](WiFiManager *) {
+    Serial.print("WiFi config portal: http://");
+    Serial.println(WiFi.softAPIP());
+  });
+
+  wm.setConfigPortalTimeout(180);
+  if (wm.autoConnect(SSID, PASSWORD)) {
+    Serial.print("WiFi connected: ");
+    Serial.print(WiFi.SSID());
+    Serial.print(" -> ");
+    Serial.println(WiFi.localIP());
+
+    // Station mode only: publish wud.local on the LAN.
+    if (MDNS.begin("wud")) {
+      MDNS.addService("http", "tcp", 80);
+      Serial.println("mDNS: http://wud.local/");
+    } else {
+      Serial.println("mDNS start failed");
+    }
+
+    // espota is only offered on the station interface: in access-point-only
+    // mode there is no wud.local to upload to.
+    startArduinoOTA();
+  } else {
+    Serial.println("WiFi not configured, access point only");
+  }
+
+  // Keep the local AP running so the file manager is always reachable at
+  // 192.168.4.1, even when a station connection exists.
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);  // modem sleep throttles throughput badly
+  if (!WiFi.softAP(SSID, PASSWORD)) {
+    Serial.println("Failed to start access point");
+  }
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
 
   delay(1000);
   startFileServer();
 }
 
 void loop() {
+  if (wifiSetupPending && (int32_t)(millis() - wifiSetupAt) >= 0) {
+    wifiSetupPending = false;
+    Serial.println("Starting WiFi setup portal");
+
+    // Release port 80 so WiFiManager's portal can serve the form.
+    server.stop();
+    delay(200);
+
+    wm.resetSettings();
+    wm.setConfigPortalTimeout(300);  // give up after 5 minutes of inactivity
+    const bool saved = wm.startConfigPortal(SSID, PASSWORD);
+    Serial.printf("WiFi setup portal closed, saved=%d\n", saved);
+
+    // Reboot to apply the new network (or to restore the file server).
+    delay(500);
+    ESP.restart();
+  }
+
+  ArduinoOTA.handle();
   server.handleClient();
-  delay(2);
+
+  if (resetPending && (int32_t)(millis() - resetAt) >= 0) {
+    Serial.println("Reboot requested from web UI");
+    delay(20);
+    ESP.restart();
+  }
+
+  delay(1);
 }

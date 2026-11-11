@@ -485,101 +485,6 @@ void handleWifiInfo() {
     server.send(200, "application/json", json);
 }
 
-void handleNetTest() {
-    uint32_t kb = server.hasArg("kb") ? (uint32_t)server.arg("kb").toInt() : 256;
-    if (kb < 16) {
-        kb = 16;
-    }
-    if (kb > 4096) {
-        kb = 4096;
-    }
-
-    uint8_t *block = (uint8_t *)malloc(4096);
-    if (!block) {
-        server.send(500, "text/plain", "oom");
-        return;
-    }
-    memset(block, 0x5a, 4096);
-
-    const uint32_t total = kb * 1024;
-    server.setContentLength(total);
-    server.send(200, "application/octet-stream", "");
-    for (uint32_t sent = 0; sent < total;) {
-        size_t n = total - sent;
-        if (n > 4096) {
-            n = 4096;
-        }
-        server.sendContent((const char *)block, n);
-        sent += n;
-    }
-    free(block);
-}
-
-void handleSdTest() {
-    if (!sdReady) {
-        server.send(503, "text/plain", "SD not ready");
-        return;
-    }
-
-    // ?kb=128 writes 128 KB of zeros and reports the measured write speed.
-    uint32_t kb = server.hasArg("kb") ? (uint32_t)server.arg("kb").toInt() : 128;
-    if (kb < 16) {
-        kb = 16;
-    }
-    if (kb > 10240) {
-        kb = 10240;
-    }
-
-    // ?bs= sets the write block size, to mirror what the upload path does.
-    uint32_t bs = server.hasArg("bs") ? (uint32_t)server.arg("bs").toInt() : 4096;
-    if (bs < 512) {
-        bs = 512;
-    }
-    if (bs > 8192) {
-        bs = 8192;
-    }
-
-    uint8_t *block = (uint8_t *)malloc(bs);
-    if (!block) {
-        server.send(500, "text/plain", "oom");
-        return;
-    }
-    memset(block, 0x5a, bs);
-
-    const uint32_t t0 = millis();
-    size_t written = 0;
-
-    sdLock();
-    File f = SD.open("/__sdtest.bin", FILE_WRITE);
-    if (f) {
-        const uint32_t total = kb * 1024;
-        while (written < total) {
-            size_t n = total - written;
-            if (n > bs) {
-                n = bs;
-            }
-            const size_t w = f.write(block, n);
-            if (w == 0) {
-                break;
-            }
-            written += w;
-        }
-        f.close();
-        SD.remove("/__sdtest.bin");
-    }
-    sdUnlock();
-
-    const uint32_t ms = millis() - t0;
-    char json[160];
-    snprintf(json, sizeof(json),
-             "{\"bytes\":%u,\"ms\":%u,\"kb_s\":%u,\"heap\":%u}",
-             (unsigned)written, (unsigned)ms,
-             (unsigned)(ms ? (uint64_t)written * 1000 / ms / 1024 : 0),
-             (unsigned)ESP.getFreeHeap());
-    free(block);
-    server.send(200, "application/json", json);
-}
-
 void handleWifiMode() {
     if (server.method() == HTTP_GET) {
         server.send(200, "text/plain", wifiMode == WUD_MODE_STA ? "sta" : "ap");
@@ -799,16 +704,12 @@ static void handleRawUpload(WiFiClient &client) {
         return;
     }
 
-    bool discard = false;
     bool appendMode = false;
     String name = path;
     const int q = name.indexOf('?');
     if (q >= 0) {
         const String query = name.substring(q + 1);
         name = name.substring(0, q);
-        if (query.indexOf("discard=1") >= 0) {
-            discard = true;
-        }
         if (query.indexOf("append=1") >= 0) {
             appendMode = true;
         }
@@ -844,44 +745,24 @@ static void handleRawUpload(WiFiClient &client) {
     uint32_t tOpenMs = 0;
     uint32_t tDrainMs = 0;
     uint32_t tCloseMs = 0;
-    if (!discard) {
-        uint32_t t = millis();
-        sdLock();
-        uploadSink = SD.open(full, appendMode ? FILE_APPEND : FILE_WRITE);
-        sdUnlock();
-        tOpenMs = millis() - t;
-        if (!uploadSink) {
-            httpRespond(client, 500, "open failed");
-            client.stop();
-            return;
-        }
+
+    uint32_t tOpen = millis();
+    sdLock();
+    uploadSink = SD.open(full, appendMode ? FILE_APPEND : FILE_WRITE);
+    sdUnlock();
+    tOpenMs = millis() - tOpen;
+    if (!uploadSink) {
+        httpRespond(client, 500, "open failed");
+        client.stop();
+        return;
     }
 
-    static uint8_t sinkBuf[1024];
     size_t remaining = contentLength;
     uint32_t lastData = millis();
     bool ok = true;
     const char *failReason = "closed";
 
     while (remaining > 0) {
-        if (discard) {
-            const size_t want = (remaining < sizeof(sinkBuf)) ? remaining : sizeof(sinkBuf);
-            const int n = client.read(sinkBuf, want);
-            if (n <= 0) {
-                if (!client.connected() || millis() - lastData > 30000) {
-                    ok = false;
-                    failReason = "timeout";
-                    break;
-                }
-                uploadStatEmptyReads++;
-                delay(1);
-                continue;
-            }
-            lastData = millis();
-            remaining -= n;
-            continue;
-        }
-
         uint8_t *block = nullptr;
         uint32_t t = micros();
         if (xQueueReceive(uploadFreeQ, &block, pdMS_TO_TICKS(15000)) != pdTRUE) {
@@ -916,30 +797,26 @@ static void handleRawUpload(WiFiClient &client) {
         xQueueSend(uploadFullQ, &item, portMAX_DELAY);
     }
 
-    if (!discard) {
-        uint32_t t = millis();
-        if (!uploadPoolDrain(20000)) {
-            ok = false;
-            failReason = "drain";
-        }
-        tDrainMs = millis() - t;
-        if (uploadWriteError) {
-            ok = false;
-            failReason = "write";
-        }
-        t = millis();
-        sdLock();
-        uploadSink.close();
-        sdUnlock();
-        tCloseMs = millis() - t;
+    uint32_t tDrain = millis();
+    if (!uploadPoolDrain(20000)) {
+        ok = false;
+        failReason = "drain";
     }
+    tDrainMs = millis() - tDrain;
+    if (uploadWriteError) {
+        ok = false;
+        failReason = "write";
+    }
+    uint32_t tClose = millis();
+    sdLock();
+    uploadSink.close();
+    sdUnlock();
+    tCloseMs = millis() - tClose;
 
     if (!ok) {
-        if (!discard) {
-            sdLock();
-            SD.remove(full);
-            sdUnlock();
-        }
+        sdLock();
+        SD.remove(full);
+        sdUnlock();
         Serial.printf("Raw upload failed: %s (%s)\n", full.c_str(), failReason);
         char errBody[128];
         snprintf(errBody, sizeof(errBody),
@@ -959,6 +836,7 @@ static void handleRawUpload(WiFiClient &client) {
         httpRespond(client, 200, body);
         Serial.printf("Raw upload done: %s %s\n", full.c_str(), body);
     }
+
     // Let the peer close first: the ESP32 has few sockets, and a chunked
     // upload opens one connection per chunk. Closing first here would leave
     // the socket in TIME_WAIT for 120 s and exhaust LWIP_MAX_SOCKETS.
@@ -977,8 +855,6 @@ void startFileServer() {
     server.on("/reset", HTTP_POST, handleReset);
     server.on("/resetwifi", HTTP_POST, handleWifiReset);
     server.on("/wifiinfo", HTTP_GET, handleWifiInfo);
-    server.on("/nettest", HTTP_GET, handleNetTest);
-    server.on("/sdtest", HTTP_GET, handleSdTest);
     server.on("/wifimode", HTTP_GET, handleWifiMode);
     server.on("/wifimode", HTTP_POST, handleWifiMode);
     server.on("/ota_fw", HTTP_POST, sendOtaResult, handleOTA);

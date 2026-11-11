@@ -263,9 +263,6 @@
                     <button id="upload" type="button" onclick="upload()">Upload</button>
                     <span id="uploadinfo" class="status"></span>
                 </div>
-                <div class="row" style="margin-top: 16px;">
-                    <button id="reset" type="button" class="secondary" onclick="resetDevice()">Reset ESP32</button>
-                </div>
             </section>
 
             <section class="card">
@@ -273,8 +270,9 @@
                 <div class="row">
                     <button type="button" onclick="openDialog('otaDialog')">Update (OTA)</button>
                     <button type="button" class="secondary" onclick="openDialog('wifiDialog')">WiFi settings</button>
+                    <button id="reset" type="button" class="secondary" onclick="resetDevice()">Reset ESP32</button>
                 </div>
-                <p class="hint">Firmware / filesystem update, and the WiFi radio mode.</p>
+                <p class="hint">Firmware / filesystem update, WiFi radio mode, and reboot.</p>
             </section>
         </div>
 
@@ -447,44 +445,147 @@ function upload() {
         if (index >= fileInput.length) {
             if (failed.length) {
                 info.textContent = "Finished with errors: " + failed.join(", ");
+                console.warn("[upload] finished with errors: " + failed.join(", "));
                 alert("Upload failed for: " + failed.join(", "));
             } else {
-                info.textContent = "Upload finished, reloading...";
+                info.textContent = "Upload finished.";
             }
-            setTimeout(function() { location.reload(); }, 1000);
+            document.getElementById("newfile").disabled = false;
+            document.getElementById("upload").disabled = false;
+            if (window.loadFiles) {
+                window.loadFiles(window.location.pathname);
+            }
             return;
         }
 
         var file = fileInput[index];
         var startedAt = Date.now();
-        info.textContent = "Uploading " + (index + 1) + "/" + fileInput.length + ": " + file.name;
+        var lastLogAt = 0;
+        var lastLoaded = 0;
+        var lastTime = startedAt;
+        var CHUNK_SIZE = 512 * 1024;
+        var chunkCount = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
-        var xh = new XMLHttpRequest();
-        xh.upload.onprogress = function(e) {
-            if (!e.lengthComputable || e.loaded == 0) {
-                return;
-            }
-            var secs = (Date.now() - startedAt) / 1000;
-            var kbs = secs > 0 ? Math.round(e.loaded / 1024 / secs) : 0;
+        info.textContent = "Uploading " + (index + 1) + "/" + fileInput.length + ": " + file.name;
+        console.log("[upload] start " + file.name + " (" + Math.round(file.size / 1024) + " KB" +
+                    (chunkCount > 1 ? ", " + chunkCount + " chunks" : "") + ")");
+
+        function reportProgress(loadedTotal) {
+            var now = Date.now();
+            var secs = (now - startedAt) / 1000;
+            var kbs = secs > 0 ? Math.round(loadedTotal / 1024 / secs) : 0;
             info.textContent = "Uploading " + (index + 1) + "/" + fileInput.length +
-                ": " + file.name + " " + Math.round(e.loaded * 100 / e.total) +
+                ": " + file.name + " " + Math.round(loadedTotal * 100 / file.size) +
                 "% (" + kbs + " KB/s)";
-        };
-        xh.onreadystatechange = function() {
-            if (xh.readyState != 4) {
-                return;
+
+            if (now - lastLogAt >= 1000) {
+                var dt = (now - lastTime) / 1000;
+                var nowKbs = dt > 0 ? Math.round((loadedTotal - lastLoaded) / 1024 / dt) : 0;
+                console.log("[upload] " + file.name + " " +
+                            Math.round(loadedTotal * 100 / file.size) + "% " +
+                            Math.round(loadedTotal / 1024) + "/" + Math.round(file.size / 1024) +
+                            " KB  " + nowKbs + " KB/s now  " + kbs + " KB/s avg");
+                lastLogAt = now;
+                lastTime = now;
+                lastLoaded = loadedTotal;
             }
-            if (xh.status != 200) {
+        }
+
+        function finishFile(ok) {
+            var secs = (Date.now() - startedAt) / 1000;
+            if (!ok) {
+                console.warn("[upload] failed " + file.name);
                 failed.push(file.name);
+            } else {
+                console.log("[upload] done " + file.name + ": " +
+                            Math.round(file.size / 1024) + " KB in " + secs.toFixed(1) +
+                            " s (" + Math.round(file.size / 1024 / Math.max(secs, 0.001)) +
+                            " KB/s)");
             }
             index++;
             sendNext();
-        };
-        var formData = new FormData();
-        formData.append("filename", file);
-        xh.open("POST", "/upload");
-        xh.setRequestHeader("X-Requested-With", "XMLHttpRequest");
-        xh.send(formData);
+        }
+
+        function sendRawChunks() {
+            var chunk = 0;
+            var restarted = false;
+
+            function handleChunkFailure(reason) {
+                console.warn("[upload] chunk " + (chunk + 1) + "/" + chunkCount + " failed: " + reason);
+                if (!restarted) {
+                    restarted = true;
+                    console.warn("[upload] restarting " + file.name + " from the first chunk");
+                    setTimeout(function() {
+                        chunk = 0;
+                        nextChunk();
+                    }, 1000);
+                    return;
+                }
+                console.warn("[upload] giving up on " + file.name);
+                finishFile(false);
+            }
+
+            function nextChunk() {
+                if (chunk >= chunkCount) {
+                    finishFile(true);
+                    return;
+                }
+
+                var begin = chunk * CHUNK_SIZE;
+                var end = Math.min(begin + CHUNK_SIZE, file.size);
+                var done = false;
+
+                var xh = new XMLHttpRequest();
+                xh.timeout = 30000;
+                xh.upload.onprogress = function(e) {
+                    if (!e.lengthComputable || e.loaded == 0) {
+                        return;
+                    }
+                    reportProgress(begin + e.loaded);
+                };
+                xh.ontimeout = function() {
+                    if (done) {
+                        return;
+                    }
+                    done = true;
+                    handleChunkFailure("no data for 30 s");
+                };
+                xh.onerror = function() {
+                    if (done) {
+                        return;
+                    }
+                    done = true;
+                    handleChunkFailure("network error");
+                };
+                xh.onreadystatechange = function() {
+                    if (xh.readyState != 4 || done) {
+                        return;
+                    }
+                    done = true;
+                    if (xh.status != 200) {
+                        handleChunkFailure("HTTP " + xh.status + " " + xh.responseText);
+                        return;
+                    }
+                    if (chunkCount > 1) {
+                        console.log("[upload] chunk " + (chunk + 1) + "/" + chunkCount + " " +
+                                    xh.responseText);
+                    } else {
+                        console.log("[upload] server: " + xh.responseText);
+                    }
+                    chunk++;
+                    nextChunk();
+                };
+
+                xh.open("POST", "http://" + location.hostname + ":81/u/" +
+                        encodeURIComponent(file.name) + (begin > 0 ? "?append=1" : ""));
+                xh.setRequestHeader("Content-Type", "text/plain");
+                xh.send(file.slice(begin, end));
+            }
+
+            nextChunk();
+        }
+
+        sendRawChunks();
     }
 
     sendNext();
@@ -565,6 +666,7 @@ function otaUpload() {
         xh.send(null);
     };
 
+    window.loadFiles = loadFiles;
     loadFiles(window.location.pathname);
 })();
 (function() {

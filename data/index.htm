@@ -275,7 +275,7 @@
                 <h2>Tools</h2>
                 <div class="row">
                     <button id="reset" type="button" onclick="resetDevice()">Reset ESP32</button>
-                    <button type="button" class="secondary" onclick="openDialog('wifiDialog')">WiFi settings</button>
+                    <button type="button" class="secondary" onclick="wifiSetup()">WiFi settings</button>
                     <button type="button" class="secondary" onclick="openDialog('otaDialog')">Update (OTA)</button>
                 </div>
                 <p class="hint">Reboot, WiFi radio mode, and firmware / filesystem update.</p>
@@ -312,25 +312,6 @@
             <button type="button" class="secondary" onclick="closeDialog('otaDialog')">Close</button>
         </div>
         <p class="status" id="otainfo"></p>
-    </dialog>
-
-    <dialog id="wifiDialog">
-        <h2>WiFi settings</h2>
-        <div class="field">
-            <label for="wifimode">Mode</label>
-            <select id="wifimode">
-                <option value="ap">Access point only</option>
-                <option value="sta">Station (join network)</option>
-            </select>
-        </div>
-        <div class="row dialog-actions">
-            <button id="wifimodebtn" type="button" onclick="applyWifiMode()">Apply</button>
-            <button id="resetwifi" type="button" class="secondary" onclick="resetWifi()">WiFi Setup</button>
-            <button type="button" class="secondary" onclick="closeDialog('wifiDialog')">Close</button>
-        </div>
-        <p class="status" id="wifimodeinfo"></p>
-        <p class="hint">Access point: 192.168.4.1 only, no station link (lower power).
-        Station: joins the saved network, also answers on wud.local.</p>
     </dialog>
 
 <script>
@@ -376,48 +357,28 @@ function resetDevice() {
     xh.send(null);
 }
 
-function resetWifi() {
-    if (!confirm("Clear the saved WiFi network and open the setup portal?")) {
-        return;
-    }
-    document.getElementById("resetwifi").disabled = true;
-    var xh = new XMLHttpRequest();
-    xh.onreadystatechange = function() {
-        if (xh.readyState == 4) {
-            document.body.innerHTML = "<h2>Starting WiFi setup...</h2><p>The configuration portal will open in a few seconds.</p>";
-            setTimeout(function() { location.href = "/"; }, 6000);
-        }
-    };
-    xh.open("POST", "/resetwifi", true);
-    xh.send(null);
-}
-
-function applyWifiMode() {
-    var mode = document.getElementById("wifimode").value;
-    var label = mode == "sta" ? "Station" : "Access point";
-    if (!confirm("Switch WiFi to " + label + " mode and reboot?")) {
+function wifiSetup() {
+    if (!confirm("Join a WiFi network? The device will restart the access point " +
+                 "\"wireless-usb-disk\" so you can enter the credentials.")) {
         return;
     }
 
-    document.getElementById("wifimodebtn").disabled = true;
     var xh = new XMLHttpRequest();
     xh.onreadystatechange = function() {
         if (xh.readyState != 4) {
             return;
         }
-        if (xh.status == 200) {
-            document.getElementById("wifimodeinfo").textContent =
-                "Rebooting, reopen the page at " +
-                (mode == "sta" ? "wud.local or the new IP" : "192.168.4.1");
-            setTimeout(function() { location.reload(); }, 10000);
-        } else {
-            alert("Failed: " + xh.status + " " + xh.responseText);
-            document.getElementById("wifimodebtn").disabled = false;
-        }
+        document.body.innerHTML =
+            "<h2>WiFi setup</h2>" +
+            "<p>1. Connect to the WiFi network <b>wireless-usb-disk</b> " +
+            "(password <b>12345678</b>).</p>" +
+            "<p>2. Open <a href=\"http://192.168.4.1/\">http://192.168.4.1/</a> " +
+            "and enter the network name and password.</p>" +
+            "<p>The device joins that network and restarts in station mode. " +
+            "If nothing is saved within 5 minutes it returns to the previous setup.</p>";
     };
-    xh.open("POST", "/wifimode", true);
-    xh.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
-    xh.send("mode=" + mode);
+    xh.open("POST", "/wifisetup", true);
+    xh.send(null);
 }
 
 function upload() {
@@ -674,16 +635,6 @@ function otaUpload() {
 
     window.loadFiles = loadFiles;
     loadFiles(window.location.pathname);
-})();
-(function() {
-    var xh = new XMLHttpRequest();
-    xh.onreadystatechange = function() {
-        if (xh.readyState == 4 && xh.status == 200) {
-            document.getElementById("wifimode").value = xh.responseText.trim();
-        }
-    };
-    xh.open("GET", "/wifimode", true);
-    xh.send(null);
 })();
 
 (function() {

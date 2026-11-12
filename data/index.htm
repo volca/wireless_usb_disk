@@ -268,11 +268,11 @@
             <section class="card">
                 <h2>Tools</h2>
                 <div class="row">
-                    <button type="button" onclick="openDialog('otaDialog')">Update (OTA)</button>
+                    <button id="reset" type="button" onclick="resetDevice()">Reset ESP32</button>
                     <button type="button" class="secondary" onclick="openDialog('wifiDialog')">WiFi settings</button>
-                    <button id="reset" type="button" class="secondary" onclick="resetDevice()">Reset ESP32</button>
+                    <button type="button" class="secondary" onclick="openDialog('otaDialog')">Update (OTA)</button>
                 </div>
-                <p class="hint">Firmware / filesystem update, WiFi radio mode, and reboot.</p>
+                <p class="hint">Reboot, WiFi radio mode, and firmware / filesystem update.</p>
             </section>
         </div>
 

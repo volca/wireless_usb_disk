@@ -604,10 +604,6 @@ static QueueHandle_t uploadFreeQ = nullptr;
 static QueueHandle_t uploadFullQ = nullptr;
 static File uploadSink;
 static volatile bool uploadWriteError = false;
-static uint32_t uploadStatWaitUs = 0;
-static uint32_t uploadStatReadUs = 0;
-static uint32_t uploadStatSdUs = 0;
-static uint32_t uploadStatEmptyReads = 0;
 
 static void uploadWriterTask(void *arg) {
     (void)arg;
@@ -618,7 +614,6 @@ static void uploadWriterTask(void *arg) {
         }
         if (!uploadWriteError && item.len) {
             size_t done = 0;
-            const uint32_t st = micros();
             sdLock();
             while (done < item.len) {
                 const size_t w = uploadSink.write(item.data + done, item.len - done);
@@ -629,7 +624,6 @@ static void uploadWriterTask(void *arg) {
                 done += w;
             }
             sdUnlock();
-            uploadStatSdUs += micros() - st;
         }
         xQueueSend(uploadFreeQ, &item.data, portMAX_DELAY);
     }
@@ -737,20 +731,11 @@ static void handleRawUpload(WiFiClient &client) {
     }
 
     uploadWriteError = false;
-    uploadStatWaitUs = 0;
-    uploadStatReadUs = 0;
-    uploadStatSdUs = 0;
-    uploadStatEmptyReads = 0;
     const uint32_t startedMs = millis();
-    uint32_t tOpenMs = 0;
-    uint32_t tDrainMs = 0;
-    uint32_t tCloseMs = 0;
 
-    uint32_t tOpen = millis();
     sdLock();
     uploadSink = SD.open(full, appendMode ? FILE_APPEND : FILE_WRITE);
     sdUnlock();
-    tOpenMs = millis() - tOpen;
     if (!uploadSink) {
         httpRespond(client, 500, "open failed");
         client.stop();
@@ -764,18 +749,14 @@ static void handleRawUpload(WiFiClient &client) {
 
     while (remaining > 0) {
         uint8_t *block = nullptr;
-        uint32_t t = micros();
         if (xQueueReceive(uploadFreeQ, &block, pdMS_TO_TICKS(15000)) != pdTRUE) {
             ok = false;
             failReason = "queue";
             break;
         }
-        uploadStatWaitUs += micros() - t;
 
         const size_t want = (remaining < UPLOAD_BLOCK_SIZE) ? remaining : UPLOAD_BLOCK_SIZE;
-        t = micros();
         const int n = client.read(block, want);
-        uploadStatReadUs += micros() - t;
         if (n <= 0) {
             xQueueSend(uploadFreeQ, &block, 0);
             if (!client.connected() || millis() - lastData > 30000) {
@@ -783,7 +764,6 @@ static void handleRawUpload(WiFiClient &client) {
                 failReason = "timeout";
                 break;
             }
-            uploadStatEmptyReads++;
             delay(1);
             continue;
         }
@@ -797,44 +777,35 @@ static void handleRawUpload(WiFiClient &client) {
         xQueueSend(uploadFullQ, &item, portMAX_DELAY);
     }
 
-    uint32_t tDrain = millis();
     if (!uploadPoolDrain(20000)) {
         ok = false;
         failReason = "drain";
     }
-    tDrainMs = millis() - tDrain;
     if (uploadWriteError) {
         ok = false;
         failReason = "write";
     }
-    uint32_t tClose = millis();
     sdLock();
     uploadSink.close();
     sdUnlock();
-    tCloseMs = millis() - tClose;
 
+    const uint32_t elapsedMs = millis() - startedMs;
+    char body[96];
     if (!ok) {
         sdLock();
         SD.remove(full);
         sdUnlock();
         Serial.printf("Raw upload failed: %s (%s)\n", full.c_str(), failReason);
-        char errBody[128];
-        snprintf(errBody, sizeof(errBody),
-                 "{\"error\":\"%s\",\"bytes\":%u,\"ms\":%u}",
-                 failReason, (unsigned)(contentLength - remaining),
-                 (unsigned)(millis() - startedMs));
-        httpRespond(client, 500, errBody);
-    } else {
-        char body[160];
         snprintf(body, sizeof(body),
-                 "{\"ms\":%u,\"read_ms\":%u,\"wait_ms\":%u,\"sd_ms\":%u,"
-                 "\"open_ms\":%u,\"drain_ms\":%u,\"close_ms\":%u,\"empty\":%u}",
-                 (unsigned)(millis() - startedMs), (unsigned)(uploadStatReadUs / 1000),
-                 (unsigned)(uploadStatWaitUs / 1000), (unsigned)(uploadStatSdUs / 1000),
-                 (unsigned)tOpenMs, (unsigned)tDrainMs, (unsigned)tCloseMs,
-                 (unsigned)uploadStatEmptyReads);
+                 "{\"error\":\"%s\",\"bytes\":%u,\"ms\":%u}",
+                 failReason, (unsigned)(contentLength - remaining), (unsigned)elapsedMs);
+        httpRespond(client, 500, body);
+    } else {
+        snprintf(body, sizeof(body), "{\"bytes\":%u,\"ms\":%u}",
+                 (unsigned)contentLength, (unsigned)elapsedMs);
         httpRespond(client, 200, body);
-        Serial.printf("Raw upload done: %s %s\n", full.c_str(), body);
+        Serial.printf("Raw upload done: %s (%u bytes, %u ms)\n",
+                      full.c_str(), (unsigned)contentLength, (unsigned)elapsedMs);
     }
 
     // Let the peer close first: the ESP32 has few sockets, and a chunked
@@ -908,7 +879,7 @@ void setup()
   WUDFS.begin(formatOnFail);
 
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  sdReady = SD.begin(SD_CS, SPI, SD_SPI_HZ, "/sd", 8);
+  sdReady = SD.begin(SD_CS, SPI, SD_SPI_HZ, "/sd", 4);
   sdSectorSize = sdReady ? SD.sectorSize() : 0;
 
   Serial.print("SD card: ");
@@ -935,6 +906,15 @@ void setup()
   // station link) or station (join a network, mDNS and ArduinoOTA available).
   wifiMode = loadWifiMode();
   bool staConnected = false;
+
+  // WiFi.useStaticBuffers(true) is not an option on this board: it moves
+  // ~32 KB of buffers into .bss, shrinking the heap by the same amount, and
+  // mDNS/ArduinoOTA then fail to allocate. Keep the dynamic default.
+
+  // Do NOT call WiFi.persistent(false) here. The flag is only read by the
+  // first esp_wifi_init(), where it selects WIFI_STORAGE_RAM for the rest of
+  // the session. Credentials that WiFiManager saves afterwards would then sit
+  // in RAM and disappear on the next reset.
 
   if (wifiMode == WUD_MODE_STA) {
     wm.setConnectTimeout(20);
@@ -971,11 +951,12 @@ void setup()
     startArduinoOTA();
   } else {
     // Access point only: no station link, no mDNS, no ArduinoOTA.
-    WiFi.mode(WIFI_AP);
-    WiFi.setSleep(false);
+    // softAP() sets the mode itself; calling WiFi.mode(WIFI_AP) first would
+    // start the AP before any config is applied.
     if (!WiFi.softAP(SSID, PASSWORD)) {
       Serial.println("Failed to start access point");
     }
+    WiFi.setSleep(false);
     Serial.print("AP IP: ");
     Serial.println(WiFi.softAPIP());
   }

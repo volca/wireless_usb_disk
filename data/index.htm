@@ -69,6 +69,11 @@
         min-width: 300px;
     }
 
+    .card.dragover {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+    }
+
     .card h2 {
         margin: 0 0 14px;
         font-size: 15px;
@@ -253,7 +258,7 @@
 
     <main>
         <div class="panels">
-            <section class="card">
+            <section class="card" id="dropcard">
                 <h2>Upload files</h2>
                 <div class="field">
                     <label for="newfile">Files (max 20 MB each)</label>
@@ -263,6 +268,7 @@
                     <button id="upload" type="button" onclick="upload()">Upload</button>
                     <span id="uploadinfo" class="status"></span>
                 </div>
+                <p class="hint">Drop files onto this card to upload them (multiple allowed).</p>
             </section>
 
             <section class="card">
@@ -678,6 +684,64 @@ function otaUpload() {
     };
     xh.open("GET", "/wifimode", true);
     xh.send(null);
+})();
+
+(function() {
+    var card = document.getElementById("dropcard");
+    var input = document.getElementById("newfile");
+    var btn = document.getElementById("upload");
+    if (!card || !input || !btn) return;
+
+    var depth = 0;
+
+    function highlight(on) {
+        card.classList.toggle("dragover", on);
+    }
+
+    card.addEventListener("dragenter", function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        depth++;
+        if (!btn.disabled) highlight(true);
+    });
+
+    card.addEventListener("dragover", function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    });
+
+    card.addEventListener("dragleave", function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        depth = Math.max(0, depth - 1);
+        if (depth == 0) highlight(false);
+    });
+
+    card.addEventListener("drop", function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        depth = 0;
+        highlight(false);
+        if (btn.disabled) return;
+
+        var files = e.dataTransfer && e.dataTransfer.files;
+        if (!files || !files.length) return;
+
+        try {
+            var dt = new DataTransfer();
+            for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
+            input.files = dt.files;
+        } catch (err) {
+            console.warn("[upload] cannot take dropped files: " + err);
+            return;
+        }
+        upload();
+    });
+
+    /* Without this a dropped file that misses the card would replace the page. */
+    window.addEventListener("dragover", function(e) { e.preventDefault(); });
+    window.addEventListener("drop", function(e) { e.preventDefault(); });
 })();
 </script>
 </html>
